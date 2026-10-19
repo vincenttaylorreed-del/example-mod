@@ -1,17 +1,14 @@
 {
-	"geode": "$GEODE_VERSION",
+	"geode": "v5.0.0",
 	"gd": {
 		"win": "2.2081",
 		"android": "2.2081",
 		"mac": "2.2081",
 		"ios": "2.2081"
 	},
-	"id": "$MOD_ID",
-	"name": "$MOD_NAME",
-	"version": "$MOD_VERSION",
-	"developer": "$MOD_DEVELOPER",
-	"description": "$MOD_DESCRIPTION",
-	"dependencies": {
-		"geode.node-ids": ">=v1.23.3"
-	}
+	"id": "xcamz.inputbuffer",
+	"name": "Input Buffer",
+	"version": "v1.0.0",
+	"developer": "xcamz",
+	"description": "Tick-based input buffer. Press F6 to cycle modes."
 }
