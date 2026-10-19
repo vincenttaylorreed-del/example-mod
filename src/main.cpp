@@ -1,100 +1,134 @@
-/**
- * Include the Geode headers.
- */
-#include <Geode/Geode.hpp>
+// Input Buffer - Geode mod
+// If you click a little too early (before landing), the click is held for a
+// short window and fires as soon as you touch the ground.
+//
+// UNTESTED: written without being able to compile against 2.2081 bindings.
+// If a member name fails to compile, check it in the Geode bindings.
 
-/**
- * Brings cocos2d and all Geode namespaces to the current scope.
- */
+#include <Geode/Geode.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
+#include <Geode/modify/CCKeyboardDispatcher.hpp>
+
 using namespace geode::prelude;
 
-/**
- * `$modify` lets you extend and modify GD's classes.
- * To hook a function in Geode, simply $modify the class
- * and write a new function definition with the signature of
- * the function you want to hook.
- *
- * Here we use the overloaded `$modify` macro to set our own class name,
- * so that we can use it for button callbacks.
- *
- * Notice the header being included, you *must* include the header for
- * the class you are modifying, or you will get a compile error.
- *
- * Another way you could do this is like this:
- *
- * struct MyMenuLayer : Modify<MyMenuLayer, MenuLayer> {};
- */
-#include <Geode/modify/MenuLayer.hpp>
-class $modify(MyMenuLayer, MenuLayer) {
-	/**
-	 * Typically classes in GD are initialized using the `init` function, (though not always!),
-	 * so here we use it to add our own button to the bottom menu.
-	 *
-	 * Note that for all hooks, your signature has to *match exactly*,
-	 * `void init()` would not place a hook!
-	*/
-	bool init() {
-		/**
-		 * We call the original init function so that the
-		 * original class is properly initialized.
-		 */
-		if (!MenuLayer::init()) {
-			return false;
-		}
+// Only buffer for modes where a click means "jump from the ground".
+static bool groundMode(PlayerObject* p) {
+    return !p->m_isShip && !p->m_isBird && !p->m_isDart && !p->m_isSwing;
+}
 
-		/**
-		 * You can use methods from the `geode::log` namespace to log messages to the console,
-		 * being useful for debugging and such. See this page for more info about logging:
-		 * https://docs.geode-sdk.org/tutorials/logging
-		*/
-		log::debug("Hello from my MenuLayer::init hook! This layer has {} children.", this->getChildrenCount());
+class $modify(BufferLayer, GJBaseGameLayer) {
+    struct Fields {
+        float timeLeft[2] = {0.f, 0.f};   // remaining buffer time per player
+        bool held[2] = {false, false};    // is the real button currently down
+        bool releasePending[2] = {false, false};
+        bool injecting = false;           // stops our own clicks re-arming the buffer
+    };
 
-		/**
-		 * See this page for more info about buttons
-		 * https://docs.geode-sdk.org/tutorials/buttons
-		*/
-		auto myButton = CCMenuItemSpriteExtra::create(
-			CCSprite::createWithSpriteFrameName("GJ_likeBtn_001.png"),
-			this,
-			/**
-			 * Here we use the name we set earlier for our modify class.
-			*/
-			menu_selector(MyMenuLayer::onMyButton)
-		);
+    void handleButton(bool down, int button, bool isPlayer1) {
+        GJBaseGameLayer::handleButton(down, button, isPlayer1);
 
-		/**
-		 * Here we access the `bottom-menu` node by its ID, and add our button to it.
-		 * Node IDs are a Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/nodetree
-		*/
-		auto menu = this->getChildByID("bottom-menu");
-		menu->addChild(myButton);
+        auto f = m_fields.self();
+        if (f->injecting || button != 1) return; // 1 = jump button
 
-		/**
-		 * The `_spr` string literal operator just prefixes the string with
-		 * your mod id followed by a slash. This is good practice for setting your own node ids.
-		*/
-		myButton->setID("my-button"_spr);
+        int i = isPlayer1 ? 0 : 1;
+        f->held[i] = down;
 
-		/**
-		 * We update the layout of the menu to ensure that our button is properly placed.
-		 * This is yet another Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/layouts
-		*/
-		menu->updateLayout();
+        if (down && Mod::get()->getSettingValue<bool>("enabled")) {
+            f->timeLeft[i] = Mod::get()->getSettingValue<int64_t>("buffer-ms") / 1000.f;
+        }
+    }
 
-		/**
-		 * We return `true` to indicate that the class was properly initialized.
-		 */
-		return true;
-	}
+    void processCommands(float dt) {
+        GJBaseGameLayer::processCommands(dt);
 
-	/**
-	 * This is the callback function for the button we created earlier.
-	 * The signature for button callbacks must always be the same,
-	 * return type `void` and taking a `CCObject*`.
-	*/
-	void onMyButton(CCObject*) {
-		FLAlertLayer::create("Geode", "Hello from my custom mod!", "OK")->show();
-	}
+        auto f = m_fields.self();
+        if (!Mod::get()->getSettingValue<bool>("enabled")) return;
+
+        for (int i = 0; i < 2; i++) {
+            PlayerObject* p = (i == 0) ? m_player1 : m_player2;
+            bool isP1 = (i == 0);
+            if (!p || p->m_isDead) {
+                f->timeLeft[i] = 0.f;
+                f->releasePending[i] = false;
+                continue;
+            }
+
+            // Release the click we injected on the previous step.
+            if (f->releasePending[i]) {
+                f->injecting = true;
+                GJBaseGameLayer::handleButton(false, 1, isP1);
+                f->injecting = false;
+                f->releasePending[i] = false;
+                continue;
+            }
+
+            if (f->timeLeft[i] <= 0.f) continue;
+            f->timeLeft[i] -= dt;
+
+            // Real button still down: the game's normal hold-to-rejump handles it.
+            if (f->held[i]) continue;
+
+            // Click was released early; fire it now that we're on the ground.
+            if (p->m_isOnGround && groundMode(p)) {
+                f->injecting = true;
+                GJBaseGameLayer::handleButton(true, 1, isP1);
+                f->injecting = false;
+                f->releasePending[i] = true;
+                f->timeLeft[i] = 0.f;
+            }
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Press V to open a small window where you can enable/disable the buffer.
+// ---------------------------------------------------------------------------
+
+class BufferToggleDelegate : public FLAlertLayerProtocol {
+public:
+    static inline bool open = false;
+
+    static BufferToggleDelegate* get() {
+        static BufferToggleDelegate inst;
+        return &inst;
+    }
+
+    static void show() {
+        if (open) return;
+        open = true;
+
+        bool on = Mod::get()->getSettingValue<bool>("enabled");
+        std::string body = on
+            ? "Input Buffer is <cg>ON</c>."
+            : "Input Buffer is <cr>OFF</c>.";
+
+        auto alert = FLAlertLayer::create(
+            get(),
+            "Input Buffer",
+            body,
+            "Close",
+            on ? "Disable" : "Enable"
+        );
+        alert->m_scene = CCDirector::sharedDirector()->getRunningScene();
+        alert->show();
+    }
+
+    void FLAlert_Clicked(FLAlertLayer*, bool btn2) override {
+        open = false;
+        if (btn2) {
+            bool on = Mod::get()->getSettingValue<bool>("enabled");
+            Mod::get()->setSettingValue<bool>("enabled", !on);
+        }
+    }
+};
+
+class $modify(KeyHook, CCKeyboardDispatcher) {
+    // If this fails to compile, check the signature in the bindings;
+    // on 2.2081 it should take a timestamp as the last parameter.
+    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
+        if (down && !repeat && key == KEY_V) {
+            BufferToggleDelegate::show();
+        }
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
+    }
 };
